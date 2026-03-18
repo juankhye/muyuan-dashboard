@@ -268,7 +268,7 @@ with st.sidebar:
     st.markdown("---")
     page = st.radio(
         "Navigation",
-        ["Signal Dashboard", "Market Charts", "P&L Drivers", "Broker Estimates", "Sensitivity", "Hog Cycle History", "Key Risks"],
+        ["Signal Dashboard", "Signpost Monitor", "Market Charts", "P&L Drivers", "Broker Estimates", "Sensitivity", "Hog Cycle History", "Key Risks"],
         label_visibility="collapsed",
     )
     st.markdown("---")
@@ -460,6 +460,273 @@ if page == "Signal Dashboard":
         ))
         fig_curve.update_layout(height=250, yaxis_title="RMB/kg", showlegend=False, **DARK_LAYOUT)
         st.plotly_chart(fig_curve, use_container_width=True)
+
+
+# ════════════════════════════════════════════════════════════════
+# PAGE 1B: SIGNPOST MONITOR
+# ════════════════════════════════════════════════════════════════
+elif page == "Signpost Monitor":
+    st.markdown("# Signpost Monitor")
+    st.markdown("Consolidated watchlist of the 9 key indicators for Muyuan entry/exit timing.")
+
+    # ── Fetch live data for signals ──
+    _lh = live_data["hog_price"]
+    _lc = live_data["corn_price"]
+    _lm = live_data["soymeal_price"]
+    _ratio = _lh / _lc if _lc > 0 else 0
+    _ashare = live_data.get("share_price_a", 49.74)
+
+    # ── Helper: traffic light color ──
+    def _tl(condition):
+        """Return bullish/neutral/bearish tuple (color, label)"""
+        if condition == "bullish":
+            return "#26a69a", "BULLISH"
+        elif condition == "bearish":
+            return "#ef5350", "BEARISH"
+        else:
+            return "#ff9800", "NEUTRAL"
+
+    # ── Section A: Live Market Signals ──
+    st.markdown("### A. Live Market Signals")
+    st.markdown('<span style="color:#787b86;font-size:0.85rem;">Auto-updating from akshare (DCE/Sina) — refreshes every page load</span>', unsafe_allow_html=True)
+
+    # Determine signal states
+    signals = []
+
+    # 1. Hog-to-Corn Ratio
+    if _ratio < 5.0:
+        r_sig = "bullish"
+        r_note = "Below 5.0x — NDRC intervention zone. Government-backed price floor."
+    elif _ratio < 5.5:
+        r_sig = "bullish"
+        r_note = "5.0-5.5x — Approaching intervention trigger. Asymmetric long."
+    elif _ratio < 7.0:
+        r_sig = "neutral"
+        r_note = "5.5-7.0x — Industry under stress but no urgency."
+    elif _ratio < 9.0:
+        r_sig = "neutral"
+        r_note = "7.0-9.0x — Breakeven zone, stable."
+    else:
+        r_sig = "bearish"
+        r_note = "Above 9.0x — High profitability = herd expansion = future oversupply."
+    signals.append(r_sig)
+
+    # 2. Hog Spot Price
+    if _lh < 12.0:
+        h_sig = "bullish"
+        h_note = f"RMB {_lh:.1f}/kg — Deep distress. Near cycle trough."
+    elif _lh < 14.0:
+        h_sig = "neutral"
+        h_note = f"RMB {_lh:.1f}/kg — Below breakeven for most farmers."
+    elif _lh < 17.0:
+        h_sig = "neutral"
+        h_note = f"RMB {_lh:.1f}/kg — Mid-cycle. Watch for supply builds."
+    else:
+        h_sig = "bearish"
+        h_note = f"RMB {_lh:.1f}/kg — Elevated. Peak cycle risk."
+    signals.append(h_sig)
+
+    # 3. Corn Price
+    if _lc < 2.2:
+        c_sig = "bullish"
+        c_note = f"RMB {_lc:.2f}/kg — Low feed cost. Margin tailwind."
+    elif _lc < 2.6:
+        c_sig = "neutral"
+        c_note = f"RMB {_lc:.2f}/kg — Normal range."
+    else:
+        c_sig = "bearish"
+        c_note = f"RMB {_lc:.2f}/kg — Elevated. Margin pressure."
+    signals.append(c_sig)
+
+    # 4. Soybean Meal Price
+    if _lm < 3.0:
+        m_sig = "bullish"
+        m_note = f"RMB {_lm:.2f}/kg — Low. Muyuan benefits from low-soy formulation."
+    elif _lm < 3.8:
+        m_sig = "neutral"
+        m_note = f"RMB {_lm:.2f}/kg — Normal range."
+    else:
+        m_sig = "bearish"
+        m_note = f"RMB {_lm:.2f}/kg — Elevated. 80%+ of China soybean is imported."
+    signals.append(m_sig)
+
+    # 5. Share Price (vs broker TPs)
+    avg_tp = (57.0 + 60.5 + 67.0 + 58.0) / 4  # avg of 4 brokers
+    upside = (avg_tp / _ashare - 1) * 100 if _ashare > 0 else 0
+    if upside > 20:
+        s_sig = "bullish"
+        s_note = f"RMB {_ashare:.2f} — {upside:.0f}% upside to avg TP (RMB {avg_tp:.0f})."
+    elif upside > 5:
+        s_sig = "neutral"
+        s_note = f"RMB {_ashare:.2f} — {upside:.0f}% upside to avg TP."
+    else:
+        s_sig = "bearish"
+        s_note = f"RMB {_ashare:.2f} — Near/above consensus TP."
+    signals.append(s_sig)
+
+    # ── Status Summary Bar ──
+    n_bull = signals.count("bullish")
+    n_bear = signals.count("bearish")
+    n_total = len(signals)
+    if n_bull >= 4:
+        overall = "BUY"
+    elif n_bull >= 3:
+        overall = "ACCUMULATE"
+    elif n_bear >= 3:
+        overall = "REDUCE"
+    else:
+        overall = "HOLD"
+
+    st.markdown(f"""
+    <div style="background:#1e222d; border:1px solid #2a2e39; border-radius:8px; padding:14px 20px; margin-bottom:20px; display:flex; align-items:center; justify-content:space-between;">
+        <span style="color:#d1d4dc; font-size:1.05rem;">
+            <strong>{n_bull}</strong> of <strong>{n_total}</strong> live indicators bullish &nbsp;|&nbsp;
+            <strong>{n_total - n_bull - n_bear}</strong> neutral &nbsp;|&nbsp;
+            <strong>{n_bear}</strong> bearish
+        </span>
+        <span>{signal_badge(overall)}</span>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # ── Signal Cards Grid ──
+    card_data = [
+        ("Hog/Corn Ratio", f"{_ratio:.1f}x", r_sig, r_note),
+        ("Hog Price (LH0)", f"RMB {_lh:.1f}/kg", h_sig, h_note),
+        ("Corn Price (C0)", f"RMB {_lc:.2f}/kg", c_sig, c_note),
+        ("Soymeal Price (M0)", f"RMB {_lm:.2f}/kg", m_sig, m_note),
+        ("Muyuan A-share", f"RMB {_ashare:.2f}", s_sig, s_note),
+    ]
+
+    cols = st.columns(5)
+    for i, (title, value, sig, note) in enumerate(card_data):
+        tl_color, tl_label = _tl(sig)
+        with cols[i]:
+            st.markdown(f"""
+            <div class="metric-card" style="position:relative; text-align:left; min-height:140px;">
+                <div style="position:absolute; top:10px; right:10px;">
+                    <span style="background:{tl_color}22; color:{tl_color}; padding:3px 10px; border-radius:12px; font-size:0.7rem; font-weight:700; border:1px solid {tl_color}40;">{tl_label}</span>
+                </div>
+                <h3 style="color:#787b86 !important; font-size:0.8rem !important;">{title}</h3>
+                <h1 style="color:#ffffff !important; font-size:1.5rem !important; margin-top:6px !important;">{value}</h1>
+                <p style="color:#787b86; font-size:0.75rem; margin-top:8px; line-height:1.3;">{note}</p>
+            </div>
+            """, unsafe_allow_html=True)
+
+    st.markdown("")
+
+    # ── Section B: Monthly Data Tracker ──
+    st.markdown("### B. Monthly / Quarterly Data Tracker")
+    st.markdown('<span style="color:#787b86;font-size:0.85rem;">Manually updated from MoA releases and Muyuan company disclosures</span>', unsafe_allow_html=True)
+
+    monthly_data = {
+        "Indicator": [
+            "National Sow Herd (mn head)",
+            "Sow Herd MoM Change (%)",
+            "Muyuan Hog Sales (mn head/mth)",
+            "Muyuan ASP (RMB/kg)",
+            "Muyuan Piglet Sales (mn head/mth)",
+            "Muyuan Unit Cost (RMB/kg)",
+            "Industry Avg Cost (RMB/kg)",
+        ],
+        "Latest Value": [
+            "39.6", "-1.0%", "7.7", "13.5", "1.1", "11.0", "13.7"
+        ],
+        "As Of": [
+            "Jan 2026", "Jan 2026", "Feb 2026", "Feb 2026", "Feb 2026", "Q4 2025", "Q4 2025"
+        ],
+        "Trend": [
+            "↓ Declining", "↓ Declining", "↑ Rising", "↓ Declining", "↑ Rising", "↓ Improving", "↓ Improving"
+        ],
+        "Frequency": [
+            "Monthly (MoA)", "Monthly (MoA)", "Monthly (Co.)", "Monthly (Co.)", "Monthly (Co.)", "Quarterly (Co.)", "Quarterly (Broker est.)"
+        ],
+        "Signal": [
+            "Bullish — below 40mn, approaching MARA 36.5mn target",
+            "Bullish — sustained destocking",
+            "Neutral — volume growth on track",
+            "Bearish — below breakeven for most peers",
+            "Neutral — strategic shift to sell more piglets",
+            "Bullish — cost leadership widening",
+            "Neutral — industry cost declining but slower than Muyuan",
+        ],
+    }
+    df_monthly = pd.DataFrame(monthly_data)
+
+    # Style the dataframe for dark theme
+    st.dataframe(df_monthly, use_container_width=True, hide_index=True, height=300)
+
+    st.markdown("""
+    <div class="info-box">
+    <strong>How to update:</strong> When new MoA sow data or Muyuan monthly operating data is released,
+    update the values in the <code>monthly_data</code> dict in <code>app.py</code> and push to GitHub.
+    Streamlit Cloud will auto-redeploy in ~1 minute.
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.markdown("")
+
+    # ── Section C: Event & Policy Log ──
+    st.markdown("### C. Event & Policy Log")
+    st.markdown('<span style="color:#787b86;font-size:0.85rem;">Key non-numeric events affecting the Muyuan thesis — curated from broker reports and news</span>', unsafe_allow_html=True)
+
+    events = [
+        {"Date": "Mar 2026", "Category": "Policy", "Event": "NDRC reaffirms 5.0x hog-to-corn ratio as reserve purchase trigger; current ratio at 5.5x", "Impact": "Bullish"},
+        {"Date": "Mar 2026", "Category": "Policy", "Event": "MARA maintains national sow herd target of 36.5mn head (current: 39.6mn)", "Impact": "Bullish"},
+        {"Date": "Feb 2026", "Category": "Company", "Event": "Muyuan targets 35mn head slaughtering volume for 2026 (vertical integration push)", "Impact": "Bullish"},
+        {"Date": "Feb 2026", "Category": "Company", "Event": "Muyuan raises dividend payout ratio from 20% to 40% (2024 dividend)", "Impact": "Bullish"},
+        {"Date": "Jan 2026", "Category": "Industry", "Event": "National sow herd drops to 39.6mn — 7th consecutive monthly decline", "Impact": "Bullish"},
+        {"Date": "Jan 2026", "Category": "Cost", "Event": "Muyuan unit complete cost falls to RMB 11.0/kg in Q4 2025 (vs industry RMB 13.7/kg)", "Impact": "Bullish"},
+        {"Date": "Dec 2025", "Category": "Policy", "Event": "China maintains 2% pork import tariff; no tariff escalation on soymeal", "Impact": "Neutral"},
+        {"Date": "Nov 2025", "Category": "Industry", "Event": "Small/medium farm exits accelerating — industry consolidation continues", "Impact": "Bullish"},
+        {"Date": "Oct 2025", "Category": "Disease", "Event": "No major ASF outbreaks reported; biosecurity stable across major producing provinces", "Impact": "Neutral"},
+        {"Date": "Sep 2025", "Category": "Capex", "Event": "Muyuan completes 12 new slaughtering facilities (total capacity now ~50mn head)", "Impact": "Neutral"},
+        {"Date": "Aug 2025", "Category": "Industry", "Event": "Industry breeding profit turns negative — RMB -134/head average", "Impact": "Bullish"},
+        {"Date": "Jul 2025", "Category": "Capex", "Event": "Wens Group and New Hope announce capex cuts; peer expansion slowing", "Impact": "Bullish"},
+    ]
+
+    df_events = pd.DataFrame(events)
+
+    # Color-code the Impact column
+    def _style_impact(val):
+        if val == "Bullish":
+            return "color: #26a69a; font-weight: 700;"
+        elif val == "Bearish":
+            return "color: #ef5350; font-weight: 700;"
+        else:
+            return "color: #ff9800; font-weight: 700;"
+
+    def _style_category(val):
+        colors = {"Policy": "#2962ff", "Company": "#ab47bc", "Industry": "#00bcd4", "Disease": "#ef5350", "Cost": "#26a69a", "Capex": "#f0b90b"}
+        c = colors.get(val, "#787b86")
+        return f"color: {c}; font-weight: 600;"
+
+    styled_events = df_events.style.map(_style_impact, subset=["Impact"]).map(_style_category, subset=["Category"])
+    st.dataframe(styled_events, use_container_width=True, hide_index=True, height=450)
+
+    st.markdown("""
+    <div class="info-box">
+    <strong>Key pattern to watch:</strong> When the hog-to-corn ratio drops below 5.0x <em>and</em> sow herd is declining MoM,
+    the historical average outcome is <strong>+17% hog price in 2 months</strong> and <strong>+15% Muyuan stock in 2 months</strong>.
+    See the Hog Cycle History page for full backtesting data.
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.markdown("")
+
+    # ── Section D: What to Monitor Next ──
+    st.markdown("### D. Upcoming Data Releases & Triggers")
+
+    triggers = [
+        ("MoA Sow Herd (Feb 2026 data)", "Mid-March 2026", "Watch for continued decline below 39.5mn. Approaching MARA 36.5mn target = supply crunch setup."),
+        ("Muyuan Mar 2026 Operating Data", "Early April 2026", "Monthly hog sales volume, ASP, piglet sales. Key for tracking cost trajectory."),
+        ("NDRC Reserve Decision", "When ratio < 5.0x", "Government purchases pork reserves to support prices. Acts as a price floor."),
+        ("Q1 2026 Earnings", "April 2026", "Quarterly cost disclosure. Watch for sub-RMB 11.0/kg unit cost."),
+        ("Dalian Hog Futures Curve", "Daily", "Contango structure signals market expects higher future prices."),
+    ]
+
+    for title, timing, desc in triggers:
+        with st.expander(f"**{title}** — *{timing}*"):
+            st.write(desc)
 
 
 # ════════════════════════════════════════════════════════════════
