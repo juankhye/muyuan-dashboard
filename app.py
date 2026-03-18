@@ -6,6 +6,128 @@ from plotly.subplots import make_subplots
 import pandas as pd
 import numpy as np
 import json
+from datetime import datetime, timedelta
+import warnings
+warnings.filterwarnings("ignore")
+
+try:
+    import akshare as ak
+    AKSHARE_AVAILABLE = True
+except ImportError:
+    AKSHARE_AVAILABLE = False
+
+
+# ── Live Data Fetching ──
+@st.cache_data(ttl=300)  # 5-minute cache
+def fetch_live_data():
+    """Fetch live market data from akshare. Returns dict with latest prices + historical series."""
+    data = {
+        "live": False,
+        "timestamp": None,
+        # Latest prices (defaults = fallback)
+        "hog_price": 10.2,        # RMB/kg
+        "corn_price": 2.34,       # RMB/kg
+        "soymeal_price": 3.44,    # RMB/kg
+        "share_price_a": 49.74,   # RMB
+        "share_price_h": 47.40,   # HKD
+        # Historical series (DataFrames)
+        "hog_hist": None,
+        "corn_hist": None,
+        "soymeal_hist": None,
+        "share_a_hist": None,
+        "share_h_hist": None,
+    }
+
+    if not AKSHARE_AVAILABLE:
+        return data
+
+    try:
+        # ── Muyuan A-share (Sina) ──
+        df_a = ak.stock_zh_a_daily(symbol="sz002714", adjust="qfq")
+        if len(df_a) > 0:
+            data["share_price_a"] = float(df_a.iloc[-1]["close"])
+            data["share_a_hist"] = df_a[["date", "close"]].copy()
+            data["share_a_hist"]["date"] = pd.to_datetime(data["share_a_hist"]["date"])
+    except Exception:
+        pass
+
+    try:
+        # ── Muyuan H-share ──
+        df_h = ak.stock_hk_daily(symbol="02714", adjust="qfq")
+        if len(df_h) > 0:
+            data["share_price_h"] = float(df_h.iloc[-1]["close"])
+            data["share_h_hist"] = df_h[["date", "close"]].copy()
+            data["share_h_hist"]["date"] = pd.to_datetime(data["share_h_hist"]["date"])
+    except Exception:
+        pass
+
+    try:
+        # ── DCE Live Hog Futures (LH0) — RMB/ton → RMB/kg ──
+        df_lh = ak.futures_zh_daily_sina(symbol="LH0")
+        if len(df_lh) > 0:
+            data["hog_price"] = round(float(df_lh.iloc[-1]["close"]) / 1000, 2)
+            data["hog_hist"] = df_lh[["date", "close"]].copy()
+            data["hog_hist"]["date"] = pd.to_datetime(data["hog_hist"]["date"])
+            data["hog_hist"]["close"] = data["hog_hist"]["close"] / 1000  # convert to /kg
+    except Exception:
+        pass
+
+    try:
+        # ── DCE Corn Futures (C0) — RMB/ton → RMB/kg ──
+        df_c = ak.futures_zh_daily_sina(symbol="C0")
+        if len(df_c) > 0:
+            data["corn_price"] = round(float(df_c.iloc[-1]["close"]) / 1000, 2)
+            data["corn_hist"] = df_c[["date", "close"]].copy()
+            data["corn_hist"]["date"] = pd.to_datetime(data["corn_hist"]["date"])
+            data["corn_hist"]["close"] = data["corn_hist"]["close"] / 1000  # convert to /kg
+    except Exception:
+        pass
+
+    try:
+        # ── DCE Soybean Meal Futures (M0) — RMB/ton → RMB/kg ──
+        df_m = ak.futures_zh_daily_sina(symbol="M0")
+        if len(df_m) > 0:
+            data["soymeal_price"] = round(float(df_m.iloc[-1]["close"]) / 1000, 2)
+            data["soymeal_hist"] = df_m[["date", "close"]].copy()
+            data["soymeal_hist"]["date"] = pd.to_datetime(data["soymeal_hist"]["date"])
+            data["soymeal_hist"]["close"] = data["soymeal_hist"]["close"] / 1000
+    except Exception:
+        pass
+
+    # Check if we got any live data
+    data["live"] = any([
+        data["hog_hist"] is not None,
+        data["corn_hist"] is not None,
+        data["share_a_hist"] is not None,
+    ])
+    data["timestamp"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    return data
+
+
+def hist_to_monthly_dict(df, date_col="date", val_col="close"):
+    """Convert a daily DataFrame to {YYYY-MM: value} dict (month-end closes)."""
+    if df is None or len(df) == 0:
+        return {}
+    df = df.copy()
+    df[date_col] = pd.to_datetime(df[date_col])
+    df = df.set_index(date_col).resample("ME")[val_col].last().dropna()
+    return {d.strftime("%Y-%m"): round(float(v), 2) for d, v in df.items()}
+
+
+def hist_to_daily_list(df, date_col="date", val_col="close"):
+    """Convert a daily DataFrame to [[YYYY-MM, value], ...] list (monthly closes for lightweight-charts)."""
+    if df is None or len(df) == 0:
+        return []
+    df = df.copy()
+    df[date_col] = pd.to_datetime(df[date_col])
+    df = df.set_index(date_col).resample("ME")[val_col].last().dropna()
+    return [[d.strftime("%Y-%m"), round(float(v), 2)] for d, v in df.items()]
+
+
+# ── Fetch data on app load ──
+live_data = fetch_live_data()
+
 
 st.set_page_config(
     page_title="Muyuan Foods (002714 CH) — Investment Dashboard",
@@ -158,7 +280,12 @@ with st.sidebar:
     - **RMB 0.1/kg GP** = ~RMB 0.9bn NPAT
     """)
     st.markdown("---")
-    st.caption("Data sources: BofA, UBS, GS, MS research reports (Mar 2026)")
+    if live_data["live"]:
+        st.markdown('<div style="background:rgba(38,166,154,0.15);border:1px solid #26a69a40;border-radius:6px;padding:6px 10px;text-align:center;font-size:0.75rem;"><span style="color:#26a69a;font-weight:700;">&#x25cf; LIVE DATA</span><br><span style="color:#787b86;">via akshare · DCE/Sina</span><br><span style="color:#4a4e59;">' + (live_data["timestamp"] or "") + '</span></div>', unsafe_allow_html=True)
+    else:
+        st.markdown('<div style="background:rgba(255,152,0,0.15);border:1px solid #ff980040;border-radius:6px;padding:6px 10px;text-align:center;font-size:0.75rem;"><span style="color:#ff9800;font-weight:700;">&#x25cf; OFFLINE</span><br><span style="color:#787b86;">Using static data</span></div>', unsafe_allow_html=True)
+    st.markdown("")
+    st.caption("Research: BofA, UBS, GS, MS (Mar 2026)")
 
 
 # ════════════════════════════════════════════════════════════════
@@ -170,15 +297,18 @@ if page == "Signal Dashboard":
 
     # ── Top-level input metrics ──
     st.markdown("### Current Market Data")
-    st.markdown("*Update these values to refresh all signals automatically.*")
+    if live_data["live"]:
+        st.markdown(f'<div style="font-size:0.8rem;color:#26a69a;margin-bottom:8px;">&#x25cf; LIVE — Last fetched: {live_data["timestamp"]} &nbsp;|&nbsp; Prices auto-populate from DCE futures & Sina. Override manually if needed.</div>', unsafe_allow_html=True)
+    else:
+        st.markdown(f'<div style="font-size:0.8rem;color:#ff9800;margin-bottom:8px;">&#x25cf; OFFLINE — Using fallback data. Update values manually.</div>', unsafe_allow_html=True)
 
     col1, col2, col3, col4 = st.columns(4)
     with col1:
-        hog_price = st.number_input("Hog Spot Price (RMB/kg)", value=10.2, step=0.1, format="%.1f")
+        hog_price = st.number_input("Hog Spot Price (RMB/kg)", value=live_data["hog_price"], step=0.1, format="%.1f")
     with col2:
-        corn_price = st.number_input("Corn Price (RMB/kg)", value=2.34, step=0.01, format="%.2f")
+        corn_price = st.number_input("Corn Price (RMB/kg)", value=live_data["corn_price"], step=0.01, format="%.2f")
     with col3:
-        soymeal_price = st.number_input("Soybean Meal (RMB/kg)", value=3.44, step=0.01, format="%.2f")
+        soymeal_price = st.number_input("Soybean Meal (RMB/kg)", value=live_data["soymeal_price"], step=0.01, format="%.2f")
     with col4:
         sow_herd = st.number_input("Sow Herd (mn head)", value=39.6, step=0.1, format="%.1f")
 
@@ -339,12 +469,16 @@ elif page == "Market Charts":
     st.markdown("# Market Charts")
     st.markdown("Interactive TradingView-style charts for cycle tracking. Data sourced from broker reports & Wind.")
 
-    # ── KPI Strip ──
+    # ── KPI Strip (live data) ──
+    _lh = live_data["hog_price"]
+    _lc = live_data["corn_price"]
+    _la = live_data["share_price_a"]
+    _ratio = round(_lh / _lc, 1) if _lc > 0 else 0
     kpi1, kpi2, kpi3, kpi4, kpi5, kpi6 = st.columns(6)
     with kpi1:
-        st.metric("Hog Price", "¥10.2/kg", "-4.3 vs Mar-25")
+        st.metric("Hog Price", f"¥{_lh}/kg")
     with kpi2:
-        st.metric("Hog-Corn Ratio", "5.5x", "-1.5 vs BE", delta_color="inverse")
+        st.metric("Hog-Corn Ratio", f"{_ratio}x", f"{_ratio - 7.0:+.1f} vs BE", delta_color="inverse")
     with kpi3:
         st.metric("Sow Herd", "39.3mn", "-1.2mn YoY", delta_color="inverse")
     with kpi4:
@@ -352,7 +486,7 @@ elif page == "Market Charts":
     with kpi5:
         st.metric("Muyuan Cost", "¥12.1/kg", "-1.9 vs 2024", delta_color="off")
     with kpi6:
-        st.metric("Share Price", "¥49.74", "18 Mar 2026", delta_color="off")
+        st.metric("Share Price", f"¥{_la}", live_data["timestamp"] or "", delta_color="off")
 
     st.markdown("---")
 
@@ -396,9 +530,19 @@ elif page == "Market Charts":
     </script>
     """
 
-    hog_price_data = {"2015-01":13.2,"2015-03":11.6,"2015-06":13.5,"2015-09":16.8,"2015-12":16.5,"2016-01":17.2,"2016-03":18.5,"2016-06":20.5,"2016-09":17.8,"2016-12":16.3,"2017-01":17.0,"2017-03":15.0,"2017-06":13.5,"2017-09":14.0,"2017-12":14.5,"2018-01":15.4,"2018-03":11.5,"2018-06":11.0,"2018-09":13.2,"2018-12":13.0,"2019-01":12.0,"2019-03":12.5,"2019-06":16.5,"2019-09":27.0,"2019-12":33.0,"2020-01":36.0,"2020-03":35.5,"2020-06":33.0,"2020-09":35.0,"2020-12":33.0,"2021-01":36.0,"2021-03":28.0,"2021-06":18.0,"2021-09":12.5,"2021-12":16.0,"2022-01":14.5,"2022-03":12.5,"2022-06":15.5,"2022-09":23.0,"2022-12":18.0,"2023-01":15.5,"2023-03":14.5,"2023-06":14.0,"2023-09":15.8,"2023-12":13.5,"2024-01":14.0,"2024-03":14.8,"2024-06":17.5,"2024-09":18.0,"2024-12":15.0,"2025-01":16.0,"2025-03":14.5,"2025-06":14.0,"2025-07":13.5,"2025-09":12.5,"2025-12":11.5,"2026-01":11.0,"2026-02":10.8,"2026-03":10.2}
-    corn_price_data = {"2015-01":2.20,"2015-03":2.18,"2015-06":2.15,"2015-09":2.00,"2015-12":1.85,"2016-01":1.82,"2016-03":1.85,"2016-06":1.88,"2016-09":1.65,"2016-12":1.55,"2017-01":1.55,"2017-03":1.60,"2017-06":1.65,"2017-09":1.60,"2017-12":1.68,"2018-01":1.72,"2018-03":1.72,"2018-06":1.72,"2018-09":1.80,"2018-12":1.80,"2019-01":1.78,"2019-03":1.80,"2019-06":1.88,"2019-09":1.85,"2019-12":1.82,"2020-01":1.82,"2020-03":1.90,"2020-06":2.05,"2020-09":2.30,"2020-12":2.60,"2021-01":2.70,"2021-03":2.75,"2021-06":2.72,"2021-09":2.55,"2021-12":2.60,"2022-01":2.65,"2022-03":2.80,"2022-06":2.85,"2022-09":2.80,"2022-12":2.85,"2023-01":2.80,"2023-03":2.72,"2023-06":2.60,"2023-09":2.58,"2023-12":2.40,"2024-01":2.35,"2024-03":2.30,"2024-06":2.30,"2024-09":2.22,"2024-12":2.25,"2025-01":2.28,"2025-03":2.30,"2025-06":2.32,"2025-07":2.31,"2025-09":2.30,"2025-12":2.32,"2026-01":2.32,"2026-02":2.32,"2026-03":2.34}
-    share_price_raw = [["2018-01",13.92],["2018-02",11.37],["2018-03",10.57],["2018-04",11.15],["2018-05",12.30],["2018-06",10.38],["2018-07",11.23],["2018-08",9.65],["2018-09",10.46],["2018-10",9.62],["2018-11",11.35],["2018-12",12.08],["2019-01",14.52],["2019-02",18.82],["2019-03",26.60],["2019-04",26.93],["2019-05",26.62],["2019-06",24.70],["2019-07",32.18],["2019-08",33.78],["2019-09",29.62],["2019-10",41.39],["2019-11",36.47],["2019-12",37.31],["2020-01",34.33],["2020-02",48.95],["2020-03",51.30],["2020-04",53.65],["2020-05",50.40],["2020-06",58.63],["2020-07",65.34],["2020-08",62.54],["2020-09",52.81],["2020-10",50.65],["2020-11",55.00],["2020-12",55.07],["2021-01",63.50],["2021-02",81.36],["2021-03",71.45],["2021-04",80.79],["2021-05",63.63],["2021-06",60.82],["2021-07",42.27],["2021-08",42.31],["2021-09",51.90],["2021-10",57.11],["2021-11",52.40],["2021-12",53.36],["2022-01",54.59],["2022-02",57.08],["2022-03",56.86],["2022-04",52.23],["2022-05",51.18],["2022-06",55.27],["2022-07",59.60],["2022-08",58.62],["2022-09",54.52],["2022-10",46.78],["2022-11",48.07],["2022-12",48.75],["2023-01",49.94],["2023-02",49.54],["2023-03",49.00],["2023-04",47.87],["2023-05",40.05],["2023-06",42.15],["2023-07",44.45],["2023-08",40.58],["2023-09",37.89],["2023-10",37.76],["2023-11",39.08],["2023-12",41.18],["2024-01",35.25],["2024-02",38.49],["2024-03",43.15],["2024-04",43.62],["2024-05",47.15],["2024-06",43.60],["2024-07",43.72],["2024-08",38.56],["2024-09",46.31],["2024-10",43.64],["2024-11",40.73],["2024-12",38.44],["2025-01",37.21],["2025-02",36.29],["2025-03",38.73],["2025-04",39.67],["2025-05",40.44],["2025-06",42.01],["2025-07",46.36],["2025-08",54.96],["2025-09",53.00],["2025-10",50.30],["2025-11",50.75],["2025-12",50.58],["2026-01",46.00],["2026-02",46.90],["2026-03",49.74]]
+    # ── Chart data: live from akshare or fallback to hardcoded ──
+    _hog_live = hist_to_monthly_dict(live_data["hog_hist"])
+    _corn_live = hist_to_monthly_dict(live_data["corn_hist"])
+    _share_live = hist_to_daily_list(live_data["share_a_hist"])
+
+    hog_price_data_fallback = {"2015-01":13.2,"2015-03":11.6,"2015-06":13.5,"2015-09":16.8,"2015-12":16.5,"2016-01":17.2,"2016-03":18.5,"2016-06":20.5,"2016-09":17.8,"2016-12":16.3,"2017-01":17.0,"2017-03":15.0,"2017-06":13.5,"2017-09":14.0,"2017-12":14.5,"2018-01":15.4,"2018-03":11.5,"2018-06":11.0,"2018-09":13.2,"2018-12":13.0,"2019-01":12.0,"2019-03":12.5,"2019-06":16.5,"2019-09":27.0,"2019-12":33.0,"2020-01":36.0,"2020-03":35.5,"2020-06":33.0,"2020-09":35.0,"2020-12":33.0,"2021-01":36.0,"2021-03":28.0,"2021-06":18.0,"2021-09":12.5,"2021-12":16.0,"2022-01":14.5,"2022-03":12.5,"2022-06":15.5,"2022-09":23.0,"2022-12":18.0,"2023-01":15.5,"2023-03":14.5,"2023-06":14.0,"2023-09":15.8,"2023-12":13.5,"2024-01":14.0,"2024-03":14.8,"2024-06":17.5,"2024-09":18.0,"2024-12":15.0,"2025-01":16.0,"2025-03":14.5,"2025-06":14.0,"2025-07":13.5,"2025-09":12.5,"2025-12":11.5,"2026-01":11.0,"2026-02":10.8,"2026-03":10.2}
+    corn_price_data_fallback = {"2015-01":2.20,"2015-03":2.18,"2015-06":2.15,"2015-09":2.00,"2015-12":1.85,"2016-01":1.82,"2016-03":1.85,"2016-06":1.88,"2016-09":1.65,"2016-12":1.55,"2017-01":1.55,"2017-03":1.60,"2017-06":1.65,"2017-09":1.60,"2017-12":1.68,"2018-01":1.72,"2018-03":1.72,"2018-06":1.72,"2018-09":1.80,"2018-12":1.80,"2019-01":1.78,"2019-03":1.80,"2019-06":1.88,"2019-09":1.85,"2019-12":1.82,"2020-01":1.82,"2020-03":1.90,"2020-06":2.05,"2020-09":2.30,"2020-12":2.60,"2021-01":2.70,"2021-03":2.75,"2021-06":2.72,"2021-09":2.55,"2021-12":2.60,"2022-01":2.65,"2022-03":2.80,"2022-06":2.85,"2022-09":2.80,"2022-12":2.85,"2023-01":2.80,"2023-03":2.72,"2023-06":2.60,"2023-09":2.58,"2023-12":2.40,"2024-01":2.35,"2024-03":2.30,"2024-06":2.30,"2024-09":2.22,"2024-12":2.25,"2025-01":2.28,"2025-03":2.30,"2025-06":2.32,"2025-07":2.31,"2025-09":2.30,"2025-12":2.32,"2026-01":2.32,"2026-02":2.32,"2026-03":2.34}
+    share_price_raw_fallback = [["2018-01",13.92],["2018-02",11.37],["2018-03",10.57],["2018-04",11.15],["2018-05",12.30],["2018-06",10.38],["2018-07",11.23],["2018-08",9.65],["2018-09",10.46],["2018-10",9.62],["2018-11",11.35],["2018-12",12.08],["2019-01",14.52],["2019-02",18.82],["2019-03",26.60],["2019-04",26.93],["2019-05",26.62],["2019-06",24.70],["2019-07",32.18],["2019-08",33.78],["2019-09",29.62],["2019-10",41.39],["2019-11",36.47],["2019-12",37.31],["2020-01",34.33],["2020-02",48.95],["2020-03",51.30],["2020-04",53.65],["2020-05",50.40],["2020-06",58.63],["2020-07",65.34],["2020-08",62.54],["2020-09",52.81],["2020-10",50.65],["2020-11",55.00],["2020-12",55.07],["2021-01",63.50],["2021-02",81.36],["2021-03",71.45],["2021-04",80.79],["2021-05",63.63],["2021-06",60.82],["2021-07",42.27],["2021-08",42.31],["2021-09",51.90],["2021-10",57.11],["2021-11",52.40],["2021-12",53.36],["2022-01",54.59],["2022-02",57.08],["2022-03",56.86],["2022-04",52.23],["2022-05",51.18],["2022-06",55.27],["2022-07",59.60],["2022-08",58.62],["2022-09",54.52],["2022-10",46.78],["2022-11",48.07],["2022-12",48.75],["2023-01",49.94],["2023-02",49.54],["2023-03",49.00],["2023-04",47.87],["2023-05",40.05],["2023-06",42.15],["2023-07",44.45],["2023-08",40.58],["2023-09",37.89],["2023-10",37.76],["2023-11",39.08],["2023-12",41.18],["2024-01",35.25],["2024-02",38.49],["2024-03",43.15],["2024-04",43.62],["2024-05",47.15],["2024-06",43.60],["2024-07",43.72],["2024-08",38.56],["2024-09",46.31],["2024-10",43.64],["2024-11",40.73],["2024-12",38.44],["2025-01",37.21],["2025-02",36.29],["2025-03",38.73],["2025-04",39.67],["2025-05",40.44],["2025-06",42.01],["2025-07",46.36],["2025-08",54.96],["2025-09",53.00],["2025-10",50.30],["2025-11",50.75],["2025-12",50.58],["2026-01",46.00],["2026-02",46.90],["2026-03",49.74]]
+
+    # Use live data if available, else fallback
+    hog_price_data = _hog_live if len(_hog_live) > 12 else hog_price_data_fallback
+    corn_price_data = _corn_live if len(_corn_live) > 12 else corn_price_data_fallback
+    share_price_raw = _share_live if len(_share_live) > 12 else share_price_raw_fallback
 
     # Period filter logic
     if period == "1Y":
@@ -477,7 +621,7 @@ elif page == "Market Charts":
     col_a, col_b = st.columns(2)
 
     with col_a:
-        st.markdown("#### Hog Price (Rmb/kg)")
+        st.markdown("#### Hog Price (Rmb/kg)" + (" — LIVE" if live_data["live"] else ""))
         hog_js = """
         const data = %s;
         const series = chart.addLineSeries({ color: '#26a69a', lineWidth: 2, priceLineVisible: false, crosshairMarkerRadius: 3 });
@@ -486,7 +630,7 @@ elif page == "Market Charts":
         components.html(chart_template % ("chart-hog", "chart-hog", hog_js), height=320, scrolling=False)
 
     with col_b:
-        st.markdown("#### Corn Price (Rmb/kg)")
+        st.markdown("#### Corn Price (Rmb/kg)" + (" — LIVE" if live_data["live"] else ""))
         corn_js = """
         const data = %s;
         const series = chart.addLineSeries({ color: '#ef5350', lineWidth: 2, priceLineVisible: false, crosshairMarkerRadius: 3 });
